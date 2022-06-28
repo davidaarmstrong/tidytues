@@ -1,0 +1,89 @@
+---
+title: "TidyTuesday"
+author: "Dave Armstrong"
+date: '2022-06-28'
+output: 
+  html_document: 
+    self_contained: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+# remotes::install_github("rlesur/klippy")
+library(klippy)
+library(tidyverse)
+library(sf)
+```
+
+```{r klippy, echo=FALSE, include=TRUE}
+klippy::klippy(position = c('top', 'right'))
+```
+
+
+## Data Managing 
+First, you can download the shape files for the Postal Areas from [here](https://datashare.ed.ac.uk/handle/10283/2597).  You can then read in the data for today, read in the shape files and simplify the shape files to make the plotting easier. We're using a pretty big tolerance (2.5km) to smooth out a lot of the rough edges in the polygons.  This works great here, but may be too much smoothing for some other purposes, so be careful.  
+
+```{r class.source='klippy', eval=FALSE}
+paygap <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-06-28/paygap.csv')
+d2 <- st_read("DS_10283_2597/GB_Postcodes/PostalArea.shp")
+d2 <- st_simplify(d2, preserveTopology = FALSE, dTolerance=2500)
+```
+```{r echo=FALSE}
+load("tt_0628.rda")
+```
+
+The Postal Area is the first letter(s) in the post code (i.e., all of the letters that come before the first number).  We can extract the first letters with a regular expression.  In the `dplyr` pipeline, we can include `str_extract(post_code, "^[A-Z]*")` which will extract all the consecutive letters at the start of the post code.  We also turn `employer_size` into a factor with levels that are in the appropriate order.  We then group by postal area and employer size and summarise the pay gap measures. 
+
+```{r class.source='klippy'}
+p1 <- paygap %>% 
+  mutate(
+    PostArea = str_extract(paygap$post_code, "^[A-Z]+"), 
+    employer_size = factor(employer_size, 
+                                levels=c("Less than 250", 
+                                         "250 to 499", 
+                                         "500 to 999", 
+                                         "1000 to 4999", 
+                                         "5000 to 19,999", 
+                                         "20,000 or more"))) %>% 
+  group_by(PostArea, employer_size) %>% 
+  summarise(across(starts_with("diff"), mean))
+```
+
+We can then merge the spatial data with the pay gap data.  You'll want to make sure that in the join, the spatial data comes first because then the resulting object will be an object of class `"sf"`, which is what we need for plotting.  Since the `p1` data have multiple observations (potentially) for each postal area, we can use a `right_join()` to make sure that we get what we need:
+
+```{r class.source='klippy'}
+p1 <- right_join(d2, p1)
+```
+
+One remaining problem we need to solve is that there are some observations without corresponding geographic information.  This places will have missing centroids, so we can pull out the x coordinate of the centroid and filter on whether that is missing: 
+
+```{r class.source='klippy'}
+p1 <- p1 %>% 
+  mutate(x = st_coordinates(st_centroid(geometry))[,1]) %>% 
+  filter(!is.na(x))
+```
+
+
+Now, we can make the plot: 
+
+```{r class.source='klippy', fig.height=7, fig.width=7, out.width="100%", fig.align="center"}
+p1 %>% 
+  filter(!is.na(employer_size)) %>% 
+  ggplot() + 
+  geom_sf(aes(geometry = geometry, fill=diff_mean_hourly_percent), size=0) + 
+  geom_sf(data=d2, aes(geometry=geometry), size=.1, fill="transparent") + 
+  scale_fill_viridis_c() + 
+  facet_wrap(~employer_size) + 
+  theme_bw() + 
+  theme(panel.grid=element_blank(), 
+        legend.position="top", 
+        plot.title=element_text(hjust=.5), 
+        plot.caption = element_text(hjust=0, face="italic")) + 
+  labs(fill="Ave Hourly Diff (%)") + 
+  ggtitle("Average Median Hourly Difference in Pay (%)\nby Employer Size") + 
+  labs(caption = "based on data from TidyTuesday and Edinburgh Data Share")
+ggsave("uk_pay_map.png", height=7, width=7, units="in", dpi=300)
+```
+
+
+
